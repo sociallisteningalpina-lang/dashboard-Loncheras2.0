@@ -23,24 +23,14 @@ def run_report_generation():
     df['created_time_colombia'] = df['created_time_processed'] - pd.Timedelta(hours=5)
 
     # --- Lógica de listado de pautas ---
-    # 1. Obtenemos TODAS las pautas únicas ANTES de eliminar filas sin comentarios.
     all_unique_posts = df[['post_url', 'platform']].drop_duplicates().copy()
     all_unique_posts.dropna(subset=['post_url'], inplace=True)
-
-    # 2. Ahora sí, creamos un DataFrame solo con los comentarios válidos para el análisis.
     df_comments = df.dropna(subset=['created_time_colombia', 'comment_text', 'post_url']).copy()
     df_comments.reset_index(drop=True, inplace=True)
-
-    # 3. Contamos los comentarios desde el DataFrame que solo tiene comentarios.
     comment_counts = df_comments.groupby('post_url').size().reset_index(name='comment_count')
-
-    # 4. Unimos la lista maestra de pautas con los conteos.
     unique_posts = pd.merge(all_unique_posts, comment_counts, on='post_url', how='left')
-    
-    # 5. Rellenamos los NaN (pautas sin comentarios) con 0.
     unique_posts['comment_count'].fillna(0, inplace=True)
     unique_posts['comment_count'] = unique_posts['comment_count'].astype(int)
-    
     unique_posts.sort_values(by='comment_count', ascending=False, inplace=True)
     unique_posts.reset_index(drop=True, inplace=True)
     
@@ -48,7 +38,6 @@ def run_report_generation():
     for index, row in unique_posts.iterrows():
         post_labels[row['post_url']] = f"Pauta {index + 1} ({row['platform']})"
     
-    # Aplicamos las etiquetas a nuestra lista completa de pautas y al DF de comentarios
     unique_posts['post_label'] = unique_posts['post_url'].map(post_labels)
     df_comments['post_label'] = df_comments['post_url'].map(post_labels)
     
@@ -57,44 +46,39 @@ def run_report_generation():
     print("Analizando sentimientos y temas...")
     sentiment_analyzer = create_analyzer(task="sentiment", lang="es")
     
-    # Realizamos los análisis sobre el DataFrame que solo contiene comentarios (df_comments)
     df_comments['sentimiento'] = df_comments['comment_text'].apply(lambda text: {"POS": "Positivo", "NEG": "Negativo", "NEU": "Neutro"}.get(sentiment_analyzer.predict(str(text)).output, "Neutro"))
     
-    # <<<--- INICIA LA NUEVA FUNCIÓN DE CLASIFICACIÓN ---<<<
+    # <<<--- INICIA LA NUEVA FUNCIÓN DE CLASIFICACIÓN (CAMPAÑA NUTRICIÓN) ---<<<
     def classify_topic(comment):
         """
-        Clasifica un comentario según las nuevas temáticas de la campaña de coleccionables.
+        Clasifica un comentario según las temáticas de la campaña "Nutrición".
         El orden de las condiciones define la prioridad de la clasificación.
         """
         comment_lower = str(comment).lower()
 
-        # Prioridad 1: Problemas de disponibilidad, canje o información.
-        if re.search(r'\bno hay\b|no se consigue|se acabar[aá]n|nadie da raz[oó]n|no saben|no llega|no lo venden|no lo encuentro', comment_lower):
-            return 'Problemas y Quejas de Disponibilidad / Canje'
+        # Prioridad 1: Críticas sobre salud, sellos de advertencia y azúcar.
+        if re.search(r'sello|az[uú]car|diabetes|nutrici[oó]n\?|nutritiva\?|grasa|oct[aá]gono|etiqueta|impuesto|dulce', comment_lower):
+            return 'Críticas de Salud y Nutrición (Sellos y Azúcar)'
 
-        # Prioridad 2: Quejas serias sobre calidad del producto o reputación de la marca.
-        if re.search(r'diarrea|explota|mala calidad|hace da[ñn]o|temu|echa como perros', comment_lower):
-            return 'Quejas sobre Calidad del Producto o Reputación'
+        # Prioridad 2: Críticas específicas sobre el uso de Inteligencia Artificial (IA) en los anuncios.
+        if re.search(r'\bia\b|inteligencia artificial|hecho con ia', comment_lower):
+            return 'Críticas sobre el Uso de IA en la Publicidad'
 
-        # Prioridad 3: Críticas y feedback sobre el concepto o ejecución de la campaña/publicidad.
-        if re.search(r'basta de|p[oó]ngale ganas|como (lo|las) hac[ií]an antes|aburren|explotar.*mochis|buenas propagandas|falta de imaginaci[oó]n|se copiaron|mal[ií]sima.*idea|potencial', comment_lower):
-            return 'Críticas a la Campaña y Publicidad'
+        # Prioridad 3: Reacciones positivas al humor, la historia o los personajes del anuncio.
+        if re.search(r'tacañita|me hizo el d[ií]a|el final|macarena|me (he )?re[ií]do|buena publicidad|hizo la noche|la amo', comment_lower):
+            return 'Reacciones Positivas al Contenido del Anuncio (Humor)'
+            
+        # Prioridad 4: Comparaciones con marcas competidoras o alternativas caseras/saludables.
+        if re.search(r'colanta|huevitos|arepa|frutiño|frutas|verduras|casero', comment_lower):
+            return 'Comparación con Competencia o Alternativas'
 
-        # Prioridad 4: Preguntas directas sobre cómo participar en la campaña.
-        if re.search(r'd[oó]nde puedo ver|d[oó]nde se puede|d[oó]nde se (pueden|puede) cambiar|lista de|c[oó]mo se reclaman|c[oó]mo consigo|duda|pregunta', comment_lower) or '?' in comment_lower:
-            return 'Preguntas sobre la Dinámica de la Campaña'
+        # Prioridad 5: Quejas directas sobre malestar físico o reacciones adversas al producto.
+        if re.search(r'cagando|no salgo del ba[ñn]o|me hizo da[ñn]o|me enferm[oó]|v[oó]mito', comment_lower):
+            return 'Quejas de Calidad o Reacción Adversa'
 
-        # Prioridad 5: Comentarios que muestran emoción, intención de compra o participación.
-        if re.search(r'maravilla|quiero+|ya tengo|voy a comprar|vamos|felicitaciones|excelente|me gusta|genial|espectacular|encanta|s[úu]per', comment_lower):
-            return 'Interés y Expectativa Positiva'
-
-        # Prioridad 6: Comentarios específicos sobre el costo del producto.
-        if re.search(r'\bprecio\b|cu[aá]nto vale|valor|caro|barato|bajen el precio', comment_lower):
-            return 'Comentarios sobre Precio'
-
-        # Prioridad 7: Filtro para interacciones sociales, spam o comentarios muy cortos.
-        if re.search(r'\bjajaja\b|\bgracias\b|bendiciones|am[eé]n|\bhola\b', comment_lower) or len(comment_lower.split()) < 4:
-            return 'Comentarios No Relevantes o Interacciones'
+        # Prioridad 6: Comentarios sin relación con el producto/campaña (motos, política, etc.) o interacciones simples.
+        if re.search(r'africa twin|moto|venezuela|bolivar|presidente|\bjajaja\b', comment_lower) or len(comment_lower.split()) < 3:
+            return 'Comentarios Fuera de Tema o Interacciones'
             
         # Categoría por defecto si no coincide con ninguna de las anteriores.
         return 'Otros'
@@ -103,13 +87,11 @@ def run_report_generation():
     df_comments['tema'] = df_comments['comment_text'].apply(classify_topic)
     print("Análisis completado.")
 
-    # Creamos el JSON para el dashboard desde df_comments
     df_for_json = df_comments[['created_time_colombia', 'comment_text', 'sentimiento', 'tema', 'platform', 'post_url', 'post_label']].copy()
     df_for_json.rename(columns={'created_time_colombia': 'date', 'comment_text': 'comment', 'sentimiento': 'sentiment', 'tema': 'topic'}, inplace=True)
     df_for_json['date'] = df_for_json['date'].dt.strftime('%Y-%m-%dT%H:%M:%S')
     all_data_json = json.dumps(df_for_json.to_dict('records'))
 
-    # Las fechas min/max se calculan desde df_comments
     min_date = df_comments['created_time_colombia'].min().strftime('%Y-%m-%d') if not df_comments.empty else ''
     max_date = df_comments['created_time_colombia'].max().strftime('%Y-%m-%d') if not df_comments.empty else ''
     
@@ -188,8 +170,11 @@ def run_report_generation():
             <div class="card charts-section">
                 <h2 class="section-title">Análisis General</h2>
                 <div class="charts-grid">
-                    <div class="chart-container"><canvas id="postCountChart"></canvas></div><div class="chart-container"><canvas id="sentimentChart"></canvas></div>
-                    <div class="chart-container full-width"><canvas id="sentimentByTopicChart"></canvas></div><div class="chart-container full-width"><canvas id="dailyChart"></canvas></div><div class="chart-container full-width"><canvas id="hourlyChart"></canvas></div>
+                    <div class="chart-container"><canvas id="postCountChart"></canvas></div>
+                    <div class="chart-container"><canvas id="sentimentChart"></canvas></div>
+                    <div class="chart-container full-width"><canvas id="sentimentByTopicChart"></canvas></div>
+                    <div class="chart-container full-width"><canvas id="dailyChart"></canvas></div>
+                    <div class="chart-container full-width"><canvas id="hourlyChart"></canvas></div>
                 </div>
             </div>
             
